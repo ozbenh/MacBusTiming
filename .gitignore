@@ -1,0 +1,5 @@
+*.o
+BusTiming.code.bin
+BusTiming.code.bin.gdb
+BusTiming.ad
+._BusTiming.ad
