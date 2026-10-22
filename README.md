@@ -27,9 +27,11 @@ already holds.
 The mouse pointer may stutter while it runs: the program masks interrupts
 for a few milliseconds at a time.
 
-It runs on System 6.0.4 and later (it needs Gestalt), on any 68000 to
-68040 Mac. It skips what it doesn't know how to measure safely on a given
-model.
+It needs Gestalt (System 6.0.4 or later) and is meant for any 68000 to
+68040 Mac; so far it has only run on emulators, under System 7.1 and
+7.5.5. Under System 6 it can't check the VIA clock (that needs the System
+7 Time Manager). It skips what it doesn't know how to measure safely on a
+given model.
 
 ## What to send back
 

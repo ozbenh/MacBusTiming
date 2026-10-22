@@ -183,7 +183,7 @@ points to I/O space ($F00000-$FFFFFF in 24-bit terms, which covers
 $50F00000 and up). AddrMapFlags ($DD0) bits 11, 12 and 13 (VIA2, ASC,
 RBV) say which devices exist, but the $0178 ROM (Mac II, IIx, IIcx, SE/30)
 and the Portable ROM leave it at $FFFFFFFF: the Mac II family then gets a
-VIA2 and an ASC, the Portable neither.
+VIA2 and an ASC, the Portable and the PowerBook 100 an ASC.
 
 **IOP machines** (IIfx, Quadra 900/950): the SCC and the SWIM are behind
 IOPs, and SCSI is not tried for now. The Duos have no internal floppy and
@@ -225,7 +225,7 @@ Centris 650, LC 475). Bus time back to back and floor, in CPU clocks.
 | Machine | RAM rd | ROM rd | VIA b2b | SCC b2b / floor | IWM/SWIM | SCSI | ASC rd / wr |
 |---|---|---|---|---|---|---|---|
 | Snow Plus, SE (7.8336 MHz) | 4 | 4 | 2.00 VIA cycles | 4 / 4 | 4 | 4 | - |
-| Snow Portable (15.67 MHz) | 5 | 6 | 2.00 VIA cycles | 26.8 (32 clk period) / 4 | 4 | 4 | - |
+| Snow Portable (15.67 MHz) | 5 | 6 | 2.00 VIA cycles | 26.8 (32 clk period) / 4 | 4 | 4 | 4 / 4 |
 | Snow Mac II (15.67 MHz) | 5 | 5 | 2.00 VIA cycles | 34.9 (37 clk period) / 3 | 4 | 4 | 5 / 4 |
 | Snow IIx | 4 | 4 | 2.00 VIA cycles | 34.9 / 3 | 4 | 4 | 5 / 4 |
 | Snow LC (15.67 MHz) | 4 | 5 | 1.00 VIA cycle | 4 / 4 | 4 | 4 | 4 |

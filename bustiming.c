@@ -857,6 +857,12 @@ static void DetectDevices(void)
 		asc = IoPointer(LM_ASCBASE);
 		hasAsc = asc != NULL;
 	}
+	else if (machType == MACH_PORTABLE || machType == MACH_PB100)
+	{
+		/* Same for the Portable ROM. They have an ASC, no VIA2. */
+		asc = IoPointer(LM_ASCBASE);
+		hasAsc = asc != NULL;
+	}
 	if (hasAsc)
 	{
 		ascVersion = asc[0x800];
