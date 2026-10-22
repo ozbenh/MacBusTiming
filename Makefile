@@ -7,12 +7,22 @@ LDFLAGS=-lRetroConsole
 RINCLUDES=$(RETRO68)/m68k-apple-macos/RIncludes
 REZFLAGS=-I$(RINCLUDES)
 
+all: BusTiming.bin BusTiming-1.4MB.img
+
 BusTiming.bin: BusTiming.code.bin
 	$(REZ) $(REZFLAGS) \
 		--copy "BusTiming.code.bin" \
 		"$(RINCLUDES)/Retro68APPL.r" \
 		-t "APPL" -c "????" \
 		-o BusTiming.bin --cc "._BusTiming.ad" --cc BusTiming.dsk
+
+# 1.44 MB HFS floppy image, for Macs whose drive can't read 800K disks any more
+BusTiming-1.4MB.img: BusTiming.bin
+	rm -f $@
+	dd if=/dev/zero of=$@ bs=1024 count=1440 status=none
+	hformat -l BusTiming $@ >/dev/null
+	hcopy -m BusTiming.bin :
+	humount >/dev/null
 
 BusTiming.code.bin: bustiming.o bt_call.o
 	$(RETRO68)/bin/m68k-apple-macos-g++ $^ -o $@ $(LDFLAGS)
@@ -25,4 +35,4 @@ bt_call.o: bt_call.s
 
 .PHONY: clean
 clean:
-	rm -f BusTiming.bin BusTiming.code.bin BusTiming.code.bin.gdb *.o BusTiming.ad ._BusTiming.ad BusTiming.dsk
+	rm -f BusTiming-1.4MB.img BusTiming.bin BusTiming.code.bin BusTiming.code.bin.gdb *.o BusTiming.ad ._BusTiming.ad BusTiming.dsk

@@ -17,8 +17,14 @@ already holds.
 2. Turn **virtual memory off** (Memory control panel), then restart. With
    virtual memory on, BusTiming stops with a message.
 3. Leave the floppy drive empty.
-4. Run BusTiming, from the 800K disk image `BusTiming.dsk` or from the
-   MacBinary file `BusTiming.bin`.
+4. Run BusTiming, from one of:
+   - `BusTiming.dsk`: 800K disk image;
+   - `BusTiming-1.4MB.img`: 1.44 MB (MFM, HFS) disk image, for Macs with a
+     SuperDrive whose drive no longer reads 800K disks;
+   - `BusTiming.bin`: MacBinary file.
+
+   Copy the application to the hard disk first if you like: it writes its
+   results next to itself, so a write-protected floppy won't do.
 5. **Don't touch the mouse or the keyboard** until it says it is done. It
    takes about half a minute. It first waits 5 seconds to measure the VIA
    clock against the clock of the Mac.
@@ -49,6 +55,8 @@ BusTiming is built with [Retro68](https://github.com/autc04/Retro68):
 
     export RETRO68=/path/to/Retro68-build/toolchain
     make
+
+The 1.44 MB image needs hfsutils (hformat, hcopy).
 
 It uses the RetroConsole library. With the Retro68 of April 2025 and
 later, a console application is bigger than the 1 MB of the default SIZE
