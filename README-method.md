@@ -220,6 +220,10 @@ read" after the mode found.
 
 The full results files are in [results/](results/).
 
+`bt_report.py <file>...` turns results files into CPU clocks, wait states,
+recovery times and VIA synchronisation in words; `bt_report.py -c
+<file>...` puts several of them side by side in one table.
+
 Built from Snow lc-family 5a5749d2 (origin/master + the LC series, VIA
 cycles releasing the CPU half way through) and q700 c4202b61 for the
 Quadra 700, System 7.1; MAME e9972422ce0 (a subset
