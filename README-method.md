@@ -118,9 +118,12 @@ cycle). On the 68040 the measured RAM write is 2 bus clocks.
 The **Summary** has, per target:
 
 - **b2b_ns**, **b2b_via**: back to back (k = 0), in ns and in VIA clock
-  cycles. b2b_via tells the synchronous devices apart: 2.00 on the Mac II
-  VIAs (a VIA access starts on a VIA clock edge and lasts a whole VIA
-  cycle, so back to back accesses take two), 1.00 on the LC.
+  cycles. b2b_via tells the synchronous devices apart: 1.00 on the Mac II,
+  LC and IIci VIAs (a VIA access starts on a VIA clock edge and the CPU
+  is released half way through the VIA cycle, so back to back accesses
+  take one VIA cycle each), 2.00 on the compact Macs (a 68000 VPA cycle
+  ends on the E clock edge, and the prefetch between two accesses makes
+  the second one miss the next edge).
 - **b2b_bus**, **b2b_clk**: bus time back to back.
 - **floor_ns**, **floor_clk**: the lowest bus time over the sweep: the
   access itself once no recovery or synchronisation wait is left.
@@ -139,10 +142,10 @@ the table.
 ### Caveats
 
 - The dbra adds a few clocks once per block. For a synchronous device
-  this can push one access in N past a VIA edge: on the Mac II the VIA
-  raw time is 2 VIA cycles at k = 0 to 4, then rises in small steps (k = 5
-  to 8: one access in 13 to 20 takes three cycles) before it is 3 cycles
-  for all accesses. The smaller N at large k makes this worse.
+  this can push one access in N past a VIA edge: on the IIci the VIA raw
+  time is 1 VIA cycle at k = 0 to 4, then rises in small steps (k = 5 to
+  8: one access in 13 to 20 takes two cycles) before it is 2 cycles for
+  all accesses. The smaller N at large k makes this worse.
 - On the 68020/68030 the bus controller takes a write and lets the
   sequencer go on with the next instructions, so fillers overlap a write
   but not a read. A write and a read of the same device can differ in raw
@@ -217,17 +220,18 @@ read" after the mode found.
 
 The full results files are in [results/](results/).
 
-Built from Snow lc-family 9d4b8532 (origin/master + the LC series) and
-q700 c4202b61 for the Quadra 700, System 7.1; MAME e9972422ce0 (a subset
+Built from Snow lc-family 5a5749d2 (origin/master + the LC series, VIA
+cycles releasing the CPU half way through) and q700 c4202b61 for the
+Quadra 700, System 7.1; MAME e9972422ce0 (a subset
 build) with System 7.1 (Quadra 700, LC III) or 7.5.5 (Quadra 800,
 Centris 650, LC 475). Bus time back to back and floor, in CPU clocks.
 
 | Machine | RAM rd | ROM rd | VIA b2b | SCC b2b / floor | IWM/SWIM | SCSI | ASC rd / wr |
 |---|---|---|---|---|---|---|---|
 | Snow Plus, SE (7.8336 MHz) | 4 | 4 | 2.00 VIA cycles | 4 / 4 | 4 | 4 | - |
-| Snow Portable (15.67 MHz) | 5 | 6 | 2.00 VIA cycles | 26.8 (32 clk period) / 4 | 4 | 4 | 4 / 4 |
-| Snow Mac II (15.67 MHz) | 5 | 5 | 2.00 VIA cycles | 34.9 (37 clk period) / 3 | 4 | 4 | 5 / 4 |
-| Snow IIx | 4 | 4 | 2.00 VIA cycles | 34.9 / 3 | 4 | 4 | 5 / 4 |
+| Snow Portable (15.67 MHz) | 5 | 6 | 1.01 VIA cycles | 26.8 (32 clk period) / 4 | 4 | 4 | 4 / 4 |
+| Snow Mac II (15.67 MHz) | 5 | 5 | 1.00 VIA cycle | 34.9 (37 clk period) / 3 | 4 | 4 | 5 / 4 |
+| Snow IIx | 4 | 4 | 1.00 VIA cycle | 34.9 / 3 | 4 | 4 | 5 / 4 |
 | Snow LC (15.67 MHz) | 4 | 5 | 1.00 VIA cycle | 4 / 4 | 4 | 4 | 4 |
 | Snow Quadra 700 (25 MHz) | 2 | 2 | 2 clk | 2 | 13 | 2 | 2 |
 | MAME Quadra 700 | 4 (wr 2) | 4 | 1.00 VIA cycle | 1.00 VIA cycle | 9 | 7 | 4 |
@@ -239,19 +243,56 @@ Snow, what its bus code models, and what the program found:
 
 - Mac II (macii/bus.rs): RAM and ROM 2 wait states on the 68020 (5 clocks),
   1 on the 68030 (4); IWM and SCSI +1 (4); ASC read +2 (5), write +1 (4);
-  VIA cycles start on a VIA clock edge and last a VIA cycle (2 VIA cycles
-  back to back); the SCC is held off for 2.2 us (34 clocks) after a 3
+  VIA cycles start on a VIA clock edge and last a VIA cycle, the CPU
+  being released half way through it (1 VIA cycle back to back, floor
+  half a VIA cycle); the SCC is held off for 2.2 us (34 clocks) after a 3
   clock access (37 clock period). All recovered.
 - Plus/SE (compact/bus.rs): E clock synchronous VIA (VPA cycle from the E
-  edge, 10 clocks), no wait states elsewhere. Recovered: VIA floor 10.0
+  edge, 10 clocks, as in the MC68000 User's Manual, Appendix B: VPA
+  recognised up to 3 clocks after E falls ends with the next fall of E,
+  later than that it waits one more E cycle), no wait states elsewhere. Recovered: VIA floor 10.0
   clocks, 2 E cycles back to back; everything else 4 clocks.
 - LC (maclc/bus.rs): I/O 1 wait state (4 clocks), RAM 1 (4), ROM 2 (5); a
-  VIA cycle starts on a VIA clock edge and lasts half a VIA cycle (1 VIA
-  cycle back to back). Recovered.
+  VIA cycle as on the Mac II (1 VIA cycle back to back). Recovered.
 - Portable (portable/bus.rs): RAM 1 and ROM 2 wait states, SCC recovery
-  1.8 us after a 4 clock access (32 clock period). Recovered.
+  1.8 us after a 4 clock access (32 clock period); VIA cycle as on the
+  Mac II (the GLU makes the VIA clock and chip select, not the 68000's E
+  clock). Recovered.
 - Quadra 700 (q700 branch): only the SWIM has wait states (2 + 11 = 13
   clocks); the VIA, SCC, SCSI and ASC accesses are plain 2 clock cycles.
   Recovered. MAME has VIA and SCC accesses synchronous to the VIA clock
   (1 VIA cycle back to back), 7 clocks for the 53C96, 9 for the SWIM, 4
   for RAM reads: real hardware will tell.
+
+## Results on real hardware
+
+The full results files are in [results/](results/), named `hw-*.txt`.
+Bus time back to back and floor, in CPU clocks.
+
+| Machine | RAM rd / wr | ROM rd | VIA1 b2b / floor | VIA2 | SCC rd b2b / floor | SCSI rd / wr | ASC rd / wr |
+|---|---|---|---|---|---|---|---|
+| Macintosh IIci (25 MHz 68030, System 7.1) | 3 / 3 | 3 | 1.00 VIA cycle / 15.9 (half a VIA cycle) | 6 (RBV) | 11 / 8 | 6 / 4 | 9 / 7 |
+
+What the IIci shows:
+
+- VIA1 is synchronous with the VIA clock: one access per VIA cycle back to
+  back, reads and writes, and an isolated read takes half a VIA cycle
+  (636.8 ns, the period being 1276.4 ns). The access starts on a VIA clock
+  edge and the CPU is released half way through the VIA cycle, once the
+  data from the VIA is latched; held to the end of the cycle, it would miss
+  the next edge and take two VIA cycles per access. The sweep is the saw
+  tooth of a half cycle: one VIA cycle up to about 650 ns of fillers, two
+  from 820 ns. Snow's Mac II, LC and Portable model this.
+- VIA2 is the RBV, a flat 6 clocks with no VIA clock synchronisation.
+- The other devices have flat bus times over the sweep (within 4 ns), so
+  they are timed in CPU clocks with nothing slower behind them: RAM and ROM
+  3 clocks (1 wait state), 5380 6, ASC 9; the SCC 8 with a recovery of
+  about 160 ns between two accesses.
+- Writes overlap the fillers (the 68030 takes the write and goes on), so
+  their floor is about 0: with enough fillers a write to the VIA, SCC,
+  5380 or ASC costs nothing more than an instruction without one.
+- The IWM/SWIM probe read FF FF 97 FF, which it didn't recognise: the
+  floppy controller was not measured.
+
+This says nothing about the GLUE of the Mac II, IIx and IIcx, or the V8
+of the LC: those need their own runs.
