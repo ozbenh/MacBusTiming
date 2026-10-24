@@ -276,6 +276,8 @@ Bus time back to back and floor, in CPU clocks.
 | Machine | RAM rd / wr | ROM rd | VIA1 b2b / floor | VIA2 | SCC rd b2b / floor | SCSI rd / wr | ASC rd / wr |
 |---|---|---|---|---|---|---|---|
 | Macintosh IIci (25 MHz 68030, System 7.1) | 3 / 3 | 3 | 1.00 VIA cycle / 15.9 (half a VIA cycle) | 6 (RBV) | 11 / 8 | 6 / 4 | 9 / 7 |
+| Macintosh LC II (15.6672 MHz 68030, System 6.0.7) | 6 / 6 (4-clock grid) | 5 | 1.05 VIA cycle / 18.9 | 6 (V8, 4-clock grid) | 40.8 / 13.2 | 5 / 3 | 6 / - |
+| Macintosh LC III (25 MHz 68030, System 7.1) | 6 / 5 (posted) | 6 | 1.00 VIA cycle / 23.6 (0.74 VIA cycle) | 5 (Sonora) | 10 / 9 | 6 / 6 | 5 / - |
 
 What the IIci shows:
 
@@ -298,5 +300,64 @@ What the IIci shows:
 - The IWM/SWIM probe read FF FF 97 FF, which it didn't recognise: the
   floppy controller was not measured.
 
-This says nothing about the GLUE of the Mac II, IIx and IIcx, or the V8
-of the LC: those need their own runs.
+What the LC II shows:
+
+- System 6.0.7: Gestalt says LC (the LC II has the same ROM) and the VIA
+  clock is not measured (no extended Time Manager), so the nominal
+  783.36 kHz is assumed. The SWIM was in ISM mode, so the ISM was measured.
+- VIA1 is synchronous with the VIA clock like on the IIci, but the CPU is
+  released near the end of the VIA cycle, not half way: one VIA cycle per
+  access back to back only with no filler (1344 ns, about 1.05 cycles); a
+  single filler (2 clocks) makes it two cycles (2551 ns), and three cycles
+  start between k = 10 and 12. An isolated read costs at least 18.9
+  clocks. So the release is about 1 to 2 clocks before the next VIA edge
+  (or the V8 still takes a request that late after the edge: the numbers
+  can't tell these apart). Writes are one cycle back to back too, their
+  cost otherwise hidden by the fillers.
+- RAM, VIA2 and the ASC (all inside the V8) are on a 4-clock grid: 6 clocks
+  when the access comes in phase, 8 when it doesn't, alternating with the
+  parity of k (a filler is 2 clocks). RAM writes back to back come every 8
+  clocks; with fillers they cost nothing.
+- ROM 5 clocks flat, 5380 read 5 flat, 5380 writes back to back every 5.
+- SCC: an isolated read is 13.2 clocks; reads and writes back to back come
+  every 2742 ns (43 clocks), flat up to about 1.9 us of fillers: a
+  recovery enforced by the hardware.
+- ISM mode register read: 7 clocks isolated, back to back one every 13.
+- A filler (`move.l d1,d5`, from the cache) takes 2.14 clocks, against
+  2.005 on the IIci: something stalls cached execution about 7% of the
+  time (the bus times are differences at the same k, so they still come
+  out close to whole clocks). Not explained.
+
+Snow's LC II (lc-family 963b273c, System 7.1; results/snow-lcii.txt) at
+the time: RAM, VIA2, SCC, IWM, 5380 and ASC all 4 clocks flat, ROM 5, VIA1
+floor 10.8 with one cycle back to back up to k = 4; its SWIM was in IWM
+mode. To be compared again once Snow's 68030 model has changed (caches,
+instruction timings, long word prefetch), before changing the LC bus.
+
+What the LC III shows (25 MHz, a clock is 40 ns, a VIA cycle 31.9 clocks):
+
+- VIA1 is synchronous with the VIA clock, released at about 0.7 of the
+  VIA cycle: one cycle per access back to back up to 4 fillers (327 ns),
+  two from 5 (409 ns); an isolated read costs at least 23.6 clocks.
+  Between the IIci (half) and the LC II (near the end). Writes: one cycle
+  back to back, otherwise hidden by the fillers.
+- RAM read 6 clocks, ROM 6, 5380 read 6, all flat (no grid as on the V8).
+  RAM writes are posted; back to back they come every 5.3 clocks, 5380
+  writes every 6.
+- VIA2 (Sonora) and the ASC 5 clocks flat.
+- SCC: read 9 clocks isolated; reads and writes back to back every 12
+  clocks (482 ns), a short recovery.
+- ISM mode register read: 6 clocks isolated, back to back every 10 (403 ns).
+- A filler takes 2.01 clocks, as on the IIci: the LC II's 2.14 is the V8's.
+- CACR reads $3111. Snow and MAME read $3911: they return the
+  write-only CD bit (bit 11), which reads as 0 on a 68030.
+- The SWIM probe reads 40 28 40 F6 (Snow and MAME: 60 44 60 F0).
+
+Snow's LC III (lc-family 963b273c, results/snow-lciii.txt) at the time:
+RAM read 5, write 4 (not posted), ROM 5, VIA2/SCC/5380/ASC 4 flat with no
+SCC recovery, ISM 4 isolated and every 11 clocks back to back; VIA1 one
+cycle back to back up to 7 fillers (574 ns), floor 19.3 (released half
+way). To be compared again once Snow's 68030 model has changed.
+
+This says nothing about the GLUE of the Mac II, IIx and IIcx: that needs
+its own run.
