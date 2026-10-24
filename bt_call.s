@@ -21,7 +21,7 @@ bt_call:
 	move.l	12(%a1),%a3
 	moveq	#0,%d6
 	move.w	16(%a1),%d6
-	move.b	18(%a1),%d1
+	move.l	24(%a1),%d1
 	moveq	#-1,%d7
 	moveq	#0,%d2
 	moveq	#0,%d3

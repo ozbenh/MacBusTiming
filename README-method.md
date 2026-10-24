@@ -95,6 +95,28 @@ The code is generated at run time, then the instruction cache is flushed:
 The access instruction is the same size as the register-only one (2
 bytes), so the loops differ only by the bus cycle.
 
+### Long accesses and the caches
+
+- **Long accesses** (`.l`: `move.l (a0),d0`, `move.l d1,(a0)`) to RAM, ROM
+  and the screen show the width of their bus port: on a 16-bit port a long
+  access takes two bus cycles, on a 32-bit port one. The screen long write
+  writes back the long read from it.
+- **Fetch, I-cache off** (68020 and up) is the register-only code run with
+  the instruction cache off (CACR EI on the 68020/68030, IE on the 68040):
+  its bus time is what fetching the instructions from RAM costs, prefetch
+  included, per access and its k fillers.
+- **D-cache hit** and **D-cache line fill** (68030 and 68040) run with the
+  data cache on and emptied before each run, reading longs with
+  `move.l d16(a0),d0`; after each block, `lea n x step(a0),a0` moves on.
+  For the hit, every read is at the same address (step 0): all but the
+  first hit the cache. For the line fill the step is 16 bytes, a cache
+  line, in a 128 KB buffer: every read misses and fills a line, by a burst
+  where the board supports one (on the 68030 with DBE set; without a
+  burst the 68030 fills only the long read). The fill less the hit is the
+  cost of the line fill. The longer instruction and the `lea` make these
+  two a little slower than a plain RAM read even without a cache. The MMU
+  table walks of new pages are in there too, once per page.
+
 ## The numbers
 
 All times are per access, from the fastest run.
@@ -174,6 +196,7 @@ through a sequence of accesses (SCC pointer, IWM state).
 | ASC | Version ($800) read; $806 written back on the original ASC (version $00) only | $800 is read only. $806 (volume) reads back what was written on the original ASC. |
 | RAM | A buffer of the program | |
 | ROM | ROMBase + $100 | |
+| Screen | First byte at ScrnBase ($824), read, and written back with the value read | Video RAM on most machines, the main RAM on the compacts and the IIci/IIsi, a NuBus card on the Mac II family. Nothing changes on the screen. Interrupts are masked, so the cursor is not drawn over it meanwhile. |
 
 **Compacts**: the low memory SCSIBase ($C00) is not the 5380 on the Plus
 and SE (it reads $00049610 and $005FF000 in Snow), so the 5380 is taken at

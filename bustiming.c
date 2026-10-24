@@ -1,6 +1,7 @@
 /*
  * BusTiming: measures how long CPU accesses to the I/O devices of a
- * Macintosh take, against RAM, ROM and a register-only instruction.
+ * Macintosh take, against RAM, ROM, the screen and a register-only
+ * instruction.
  *
  * VIA1 timer 2 is the stopwatch. It belongs to the Time Manager, so it is
  * only borrowed with interrupts masked, one short window at a time, and
@@ -22,7 +23,7 @@
 #include <OSUtils.h>
 #include <Traps.h>
 
-#define VERSION "1"
+#define VERSION "3"
 
 /* Low memory globals */
 #define LM_TICKS		0x16A
@@ -31,6 +32,7 @@
 #define LM_SCCWR		0x1DC
 #define LM_IWM			0x1E0
 #define LM_TIME			0x20C
+#define LM_SCRNBASE		0x824
 #define LM_ROMBASE		0x2AE
 #define LM_SCSIBASE		0xC00
 #define LM_ASCBASE		0xCC0
@@ -54,6 +56,10 @@
 #define OP_START_HI	0x1687	/* move.b d7,(a3) */
 #define OP_READ		0x1010	/* move.b (a0),d0 */
 #define OP_WRITE	0x1081	/* move.b d1,(a0) */
+#define OP_READ_L	0x2010	/* move.l (a0),d0 */
+#define OP_WRITE_L	0x2081	/* move.l d1,(a0) */
+#define OP_READ_DL	0x2028	/* move.l d16(a0),d0 */
+#define OP_LEA_A0	0x41E8	/* lea d16(a0),a0 */
 #define OP_REG		0x1001	/* move.b d1,d0 */
 #define OP_FILL		0x2A01	/* move.l d1,d5 */
 #define OP_DBRA_D6	0x51CE	/* dbra d6,<disp> */
@@ -63,6 +69,9 @@
 #define OP_RTS		0x4E75
 /* Bytes around the block: start, dbra, stop, rts */
 #define WRAPPER_BYTES	16
+
+/* Buffer read by the data cache line fill test */
+#define DC_BYTES	(128 * 1024L)
 
 /* Gestalt machine types used here */
 enum
@@ -183,12 +192,14 @@ struct bt_args
 	volatile uint8_t *t2l;		/* 8 */
 	volatile uint8_t *t2h;		/* 12 */
 	uint16_t loops;				/* 16: loop count - 1 */
-	uint8_t wval;				/* 18 */
+	uint8_t pad1;
 	uint8_t hi1, lo, hi2;		/* 19, 20, 21 */
-	uint8_t pad[2];
+	uint8_t pad2[2];
+	uint32_t wval;				/* 24 */
 };
 _Static_assert(offsetof(struct bt_args, loops) == 16, "bt_args layout");
 _Static_assert(offsetof(struct bt_args, hi2) == 21, "bt_args layout");
+_Static_assert(offsetof(struct bt_args, wval) == 24, "bt_args layout");
 
 extern void bt_call(struct bt_args *args);
 
@@ -204,7 +215,7 @@ static uint16_t romVersion;
 static volatile uint8_t *via;
 
 /* Device bases and what was found */
-static volatile uint8_t *via2, *sccRd, *sccWr, *iwm, *scsi, *asc, *romAddr;
+static volatile uint8_t *via2, *sccRd, *sccWr, *iwm, *scsi, *asc, *romAddr, *screen;
 static uint32_t lmScsiBase;
 static int scsiWriteOffset;
 static const char *scsiNote = "";
@@ -228,6 +239,7 @@ static uint16_t t0;				/* Timer overhead: the code with an empty block */
 
 static uint16_t *codeBuf;
 static uint8_t *ramBuf;
+static uint8_t *dcBuf;
 
 /* Ticks at the start and the end */
 static uint32_t startTicks, endTicks;
@@ -460,8 +472,12 @@ static void FlushCode(void)
 	RestoreIRQ(sr);
 }
 
-/* Generates: start the timer; loop: n x (op, k x filler); dbra; read the timer */
-static void Generate(uint16_t op, int n, int k)
+/*
+ * Generates: start the timer; loop: n x (op, k x filler); dbra; read the
+ * timer. With a step (MODE_DCACHE), op is move.l d16(a0),d0 with d16 = i x
+ * step, and lea n x step(a0),a0 comes before the dbra.
+ */
+static void Generate(uint16_t op, int16_t step, int n, int k)
 {
 	uint16_t *p = codeBuf;
 
@@ -471,10 +487,19 @@ static void Generate(uint16_t op, int n, int k)
 	for (int i = 0; i < n; i++)
 	{
 		*p++ = op;
+		if (op == OP_READ_DL)
+		{
+			*p++ = (uint16_t)(i * step);
+		}
 		for (int j = 0; j < k; j++)
 		{
 			*p++ = OP_FILL;
 		}
+	}
+	if (op == OP_READ_DL)
+	{
+		*p++ = OP_LEA_A0;
+		*p++ = (uint16_t)(n * step);
 	}
 	*p++ = OP_DBRA_D6;
 	*p = (uint16_t)((loop - p) * 2);
@@ -486,20 +511,20 @@ static void Generate(uint16_t op, int n, int k)
 	FlushCode();
 }
 
-/* Accesses per block for k fillers, so the code stays in the I-cache */
-static int BlockSize(int k)
-{
-	int n = codeBudget / (2 + 2 * k);
-	return n > 64 ? 64 : n;
-}
-
 /*
  * Targets
  */
 enum { KIND_REG, KIND_READ, KIND_WRITE };
 enum { PRE_NONE, PRE_IWM, PRE_WSRC };
+/*
+ * MODE_ICACHE_OFF: the instruction cache is off during the run.
+ * MODE_DCACHE: the data cache is on and empty at the start of the run; the
+ * accesses are long reads at a0 + i x step in the block, and a0 moves on by
+ * n x step after each block.
+ */
+enum { MODE_PLAIN, MODE_ICACHE_OFF, MODE_DCACHE };
 
-#define MAX_TARGETS		20
+#define MAX_TARGETS		32
 #define MAX_K			40
 
 static const int16_t kList[MAX_K] =
@@ -524,6 +549,9 @@ struct target
 	uint8_t kind, pre;
 	volatile uint8_t *wsrc;		/* PRE_WSRC: register read for the value to write */
 	uint8_t wval;
+	uint8_t size;				/* Bytes accessed: 1 or 4 */
+	uint8_t mode;
+	int16_t step;				/* MODE_DCACHE */
 	struct result r[MAX_K];
 };
 
@@ -542,7 +570,24 @@ static struct target *AddTarget(const char *name, volatile uint8_t *addr, uint8_
 	t->pre = pre;
 	t->wsrc = wsrc;
 	t->wval = wval;
+	t->size = 1;
+	t->mode = MODE_PLAIN;
+	t->step = 0;
 	return t;
+}
+
+/* Bytes of the access instruction */
+static int OpBytes(const struct target *t)
+{
+	return t->mode == MODE_DCACHE ? 4 : 2;
+}
+
+/* Accesses per block for k fillers, so the code stays in the I-cache */
+static int BlockSize(const struct target *t, int k)
+{
+	int budget = codeBudget - (t->mode == MODE_DCACHE ? 4 : 0);
+	int n = budget / (OpBytes(t) + 2 * k);
+	return n > 64 ? 64 : n;
 }
 
 static void TargetPre(struct target *t, struct bt_args *a)
@@ -555,7 +600,7 @@ static void TargetPre(struct target *t, struct bt_args *a)
 		(void)iwm[0x1A00];
 		break;
 	case PRE_WSRC:
-		a->wval = *t->wsrc;
+		a->wval = t->size == 4 ? *(volatile uint32_t *)t->wsrc : *t->wsrc;
 		break;
 	}
 }
@@ -571,12 +616,71 @@ static void TargetPost(struct target *t)
 
 static uint16_t OpFor(const struct target *t)
 {
+	if (t->mode == MODE_DCACHE)
+	{
+		return OP_READ_DL;
+	}
 	switch (t->kind)
 	{
-	case KIND_READ: return OP_READ;
-	case KIND_WRITE: return OP_WRITE;
+	case KIND_READ: return t->size == 4 ? OP_READ_L : OP_READ;
+	case KIND_WRITE: return t->size == 4 ? OP_WRITE_L : OP_WRITE;
 	default: return OP_REG;
 	}
+}
+
+/* Instruction cache enable bit of the CACR: 68020/68030 EI, 68040 IE */
+static uint32_t IcacheBit(void)
+{
+	return cpuType == 5 ? 0x8000UL : 0x0001UL;
+}
+
+/* Empties the data cache, which must be on */
+static void DcacheInvalidate(void)
+{
+	if (cpuType == 4)
+	{
+		cacrSet(cacrGet() | 0x0800);
+	}
+	else
+	{
+		cpushaDC();
+	}
+}
+
+/* Sets up the caches for the target's mode, after WindowBegin */
+static void CacheModeBegin(const struct target *t)
+{
+	if (t->mode == MODE_ICACHE_OFF)
+	{
+		cacrSet(cacrGet() & ~IcacheBit());
+	}
+	else if (t->mode == MODE_DCACHE)
+	{
+		cacrSet(cacrGet() | (cpuType == 4 ? 0x0100UL : 0x80000000UL));
+	}
+}
+
+/* Undoes CacheModeBegin, before WindowEnd */
+static void CacheModeEnd(const struct target *t)
+{
+	if (t->mode == MODE_ICACHE_OFF)
+	{
+		cacrSet(cacrGet() | (cacrSaved & IcacheBit()));
+	}
+	else if (t->mode == MODE_DCACHE)
+	{
+		DcacheInvalidate();
+		cacrSet(cacrGet() & ~(cpuType == 4 ? 0x0100UL : 0x80000000UL));
+	}
+}
+
+static uint16_t RunTarget(const struct target *t, struct bt_args *a)
+{
+	if (t->mode == MODE_DCACHE)
+	{
+		DcacheInvalidate();
+	}
+	return Run(a);
 }
 
 /* One window: optional warm-up run, then the timed run */
@@ -584,11 +688,13 @@ static uint16_t TimedWindow(struct target *t, struct bt_args *a)
 {
 	WindowBegin();
 	TargetPre(t, a);
+	CacheModeBegin(t);
 	if (cpuType != 1)
 	{
-		(void)Run(a);
+		(void)RunTarget(t, a);
 	}
-	uint16_t ticks = Run(a);
+	uint16_t ticks = RunTarget(t, a);
+	CacheModeEnd(t);
 	TargetPost(t);
 	WindowEnd();
 	return ticks;
@@ -618,7 +724,7 @@ static void Measure(struct target *t, int ki)
 {
 	const int k = kList[ki];
 	struct result *r = &t->r[ki];
-	const int n = BlockSize(k);
+	const int n = BlockSize(t, k);
 	struct bt_args a = {0};
 
 	r->ok = false;
@@ -626,7 +732,7 @@ static void Measure(struct target *t, int ki)
 	{
 		return;
 	}
-	Generate(OpFor(t), n, k);
+	Generate(OpFor(t), t->step, n, k);
 	a.code = codeBuf;
 	a.target = t->addr;
 	a.t2l = &via[VIA_T2CL];
@@ -648,6 +754,11 @@ static void Measure(struct target *t, int ki)
 	if (loops > 16384)
 	{
 		loops = 16384;
+	}
+	/* A run must stay in the buffer */
+	if (t->step && loops > DC_BYTES / (t->step * n))
+	{
+		loops = DC_BYTES / (t->step * n);
 	}
 	a.loops = loops - 1;
 
@@ -671,7 +782,7 @@ static void MeasureT0(void)
 	struct bt_args a = {0};
 	uint16_t v[16];
 
-	Generate(OP_REG, 0, 0);
+	Generate(OP_REG, 0, 0, 0);
 	a.code = codeBuf;
 	a.target = ramBuf;
 	a.t2l = &via[VIA_T2CL];
@@ -727,6 +838,7 @@ static void DetectMachine(void)
 	romVersion = *(volatile uint16_t *)(romAddr + 8);
 	via = (volatile uint8_t *)lm32(LM_VIA);
 	viaIER = via[VIA_IER];
+	screen = (volatile uint8_t *)lm32(LM_SCRNBASE);
 }
 
 /* The IIfx and the Quadra 900/950: SCC and SWIM behind IOPs, SCSI not tried for now */
@@ -916,7 +1028,32 @@ static void BuildTargets(void)
 	regTarget = AddTarget("register only", ramBuf, KIND_REG, PRE_NONE, NULL, 0);
 	ramTarget = AddTarget("RAM read", ramBuf, KIND_READ, PRE_NONE, NULL, 0);
 	AddTarget("RAM write", ramBuf + 2, KIND_WRITE, PRE_NONE, NULL, 0x5A);
+	AddTarget("RAM read.l", ramBuf, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
+	AddTarget("RAM write.l", ramBuf + 8, KIND_WRITE, PRE_NONE, NULL, 0x5A)->size = 4;
 	AddTarget("ROM read", romAddr + 0x100, KIND_READ, PRE_NONE, NULL, 0);
+	AddTarget("ROM read.l", romAddr + 0x100, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
+	if (screen)
+	{
+		/* First bytes of the screen, written back with the value read */
+		AddTarget("Screen read", screen, KIND_READ, PRE_NONE, NULL, 0);
+		AddTarget("Screen write", screen, KIND_WRITE, PRE_WSRC, screen, 0);
+		AddTarget("Screen read.l", screen, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
+		AddTarget("Screen write.l", screen, KIND_WRITE, PRE_WSRC, screen, 0)->size = 4;
+	}
+	if (cpuType >= 3)
+	{
+		AddTarget("Fetch, I-cache off", ramBuf, KIND_REG, PRE_NONE, NULL, 0)->mode = MODE_ICACHE_OFF;
+	}
+	if (cpuType >= 4 && dcBuf)
+	{
+		struct target *t = AddTarget("D-cache hit", dcBuf, KIND_READ, PRE_NONE, NULL, 0);
+		t->size = 4;
+		t->mode = MODE_DCACHE;
+		t = AddTarget("D-cache line fill", dcBuf, KIND_READ, PRE_NONE, NULL, 0);
+		t->size = 4;
+		t->mode = MODE_DCACHE;
+		t->step = 16;
+	}
 	AddTarget("VIA1 DDRB read", via + VIA_DDRB, KIND_READ, PRE_NONE, NULL, 0);
 	AddTarget("VIA1 IER read", via + VIA_IER, KIND_READ, PRE_NONE, NULL, 0);
 	AddTarget("VIA1 DDRB write", via + VIA_DDRB, KIND_WRITE, PRE_WSRC, via + VIA_DDRB, 0);
@@ -1086,6 +1223,7 @@ static void PrintHeader(void)
 	{
 		out("VIA clock: not measured (no Microseconds or no RTC seconds), nominal %ld\n", (long)VIA_HZ);
 	}
+	out("Screen $%08lX\n", (unsigned long)screen);
 	out("VIA1 $%08lX IER $%02X\n", (unsigned long)via, viaIER);
 	out("VIA2 %s $%08lX\n", hasVia2 ? "yes" : "no", (unsigned long)via2);
 	out("SCC %s rd $%08lX wr $%08lX\n", hasScc ? "yes" : "no", (unsigned long)sccRd, (unsigned long)sccWr);
@@ -1220,7 +1358,15 @@ int main(void)
 	}
 
 	codeBuf = (uint16_t *)(((uintptr_t)NewPtr(65536 + 16) + 15) & ~15UL);
-	ramBuf = (uint8_t *)NewPtrClear(64);
+	ramBuf = (uint8_t *)(((uintptr_t)NewPtrClear(64 + 16) + 15) & ~15UL);
+	if (cpuType >= 4)
+	{
+		dcBuf = (uint8_t *)NewPtrClear(DC_BYTES + 16);
+		if (dcBuf)
+		{
+			dcBuf = (uint8_t *)(((uintptr_t)dcBuf + 15) & ~15UL);
+		}
+	}
 	if (!codeBuf || !ramBuf)
 	{
 		printf("Out of memory\n");
@@ -1258,7 +1404,7 @@ int main(void)
 
 	for (int ki = 0; ki < MAX_K && kList[ki] >= 0 && (ki == 0 || kList[ki]); ki++)
 	{
-		if (BlockSize(kList[ki]) < 1)
+		if (BlockSize(regTarget, kList[ki]) < 1)
 		{
 			break;
 		}

@@ -3,13 +3,15 @@
 BusTiming measures how long the processor of a classic 68k Macintosh
 takes to read and write the registers of the chips on the logic board:
 the VIAs, the SCC (serial), the IWM or SWIM (floppy), the SCSI chip and
-the Apple Sound Chip. It compares them with reads and writes of RAM and
-ROM.
+the Apple Sound Chip. It compares them with reads and writes of RAM, ROM
+and the screen (video RAM), in bytes and in longs, and also measures
+instruction fetches with the instruction cache off and data cache line
+fills (68030 and 68040).
 
 The results help the [Snow](https://github.com/twvd/snow) emulator get the
 speed of these accesses right. The program changes nothing on your Mac:
-it only reads registers, and only writes back values that a register
-already holds.
+it only reads registers, and only writes back values that a register (or
+the screen) already holds.
 
 ## Running it
 
@@ -26,7 +28,7 @@ already holds.
    Copy the application to the hard disk first if you like: it writes its
    results next to itself, so a write-protected floppy won't do.
 5. **Don't touch the mouse or the keyboard** until it says it is done. It
-   takes about half a minute. It first waits 5 seconds to measure the VIA
+   takes under a minute. It first waits 5 seconds to measure the VIA
    clock against the clock of the Mac.
 6. When it says "Saved", press Return to quit.
 
