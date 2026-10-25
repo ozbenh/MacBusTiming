@@ -5,8 +5,9 @@ takes to read and write the registers of the chips on the logic board:
 the VIAs, the SCC (serial), the IWM or SWIM (floppy), the SCSI chip and
 the Apple Sound Chip. It compares them with reads and writes of RAM, ROM
 and the screen (video RAM), in bytes and in longs, and also measures
-instruction fetches with the instruction cache off and data cache line
-fills (68030 and 68040).
+instruction fetches with the instruction cache off, data cache line
+fills (68030 and 68040), reads that alternate between two places in the
+RAM, and how much the RAM refresh slows reads.
 
 The results help the [Snow](https://github.com/twvd/snow) emulator get the
 speed of these accesses right. The program changes nothing on your Mac:

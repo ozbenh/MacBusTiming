@@ -117,6 +117,46 @@ bytes), so the loops differ only by the bus cycle.
   two a little slower than a plain RAM read even without a cache. The MMU
   table walks of new pages are in there too, once per page.
 
+### RAM rows and banks (v4)
+
+- **RAM pair +d** reads the RAM buffer and a second address d bytes away
+  in turn (`move.b (a0),d0` then `move.b (a1),d0`, N even), for d = 32 B,
+  4 KB, 64 KB, 1 MB and 4 MB. Plain RAM read hits one address, so one
+  DRAM row; the pairs go to another row (a few KB away and more) and then
+  to another bank (MBs away, e.g. soldered RAM against a SIMM), so a cost
+  of opening a row or switching banks shows against RAM read. The second
+  address is above the buffer when that stays under the RAM top, below it
+  otherwise; the table gives it ("in turn with"). The RAM top is the
+  logical RAM size (Gestalt 'lram'), 8 MB in the 24-bit address map (but
+  at least the buffer: the LC and LC II have 10 MB there). Both are logical
+  addresses: with the MMU on, the banks behind them are the ROM's mapping.
+
+### Refresh scan (v4)
+
+The repeats of a run differ by a few ticks on RAM and the screen of real
+machines, when ROM and I/O repeat exactly: something delays some DRAM
+accesses (refresh, or a clock crossing between the CPU and the DRAM
+controller). One access can't be timed (a VIA tick is 32 clocks at 25
+MHz), so the scan looks at the runs instead:
+
+- one read and k fillers per loop (N = 1), so the reads come at a fixed
+  period; k = 0 to 63;
+- RAM read, ROM read (no refresh: the control) and screen read;
+- 15 repeats of a run of about 1200 ticks, keeping the fastest, the
+  median and the slowest, per loop in clocks, and the spread in ticks.
+
+When the refresh is clocked from the CPU clock, a refresh delays the read
+it falls on by what is left of it, and where it falls depends on where
+the run starts. When the refresh period T is a multiple of the loop
+period (or close to it), every refresh of a run falls at the same place
+in the loop, so runs differ by up to one refresh length R per refresh:
+the spread peaks at those k, and the slowest run less the fastest, per
+refresh, gives R. When they don't line up, the refreshes fall everywhere
+and every run pays the same average, about R x R / (2T) per access (the
+offset of RAM over ROM). The k of the peaks give T; T and the offset give
+R as a check. A clock crossing gives an even spread at every k instead.
+Not run on the compact Macs (one VBL wait per window makes it too long).
+
 ## The numbers
 
 All times are per access, from the fastest run.
@@ -175,7 +215,7 @@ the table.
 - Reading T2 is a VIA access itself: its synchronisation varies with what
   ran before it by up to one tick, which is at most 1/(N x L) tick per
   access (under 0.01 tick at k = 0).
-- On real hardware the RAM refresh, the video (compacts outside the VBL,
+- On real hardware the RAM refresh (see the refresh scan), the video (compacts outside the VBL,
   and the Plus's sound/disk-speed buffer reads one per line even in the
   VBL) and NuBus video cards on the bus can slow some runs: the fastest run
   is kept, the median shows how often it happens.

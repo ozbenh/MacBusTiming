@@ -4,6 +4,7 @@
 |
 | The generated code expects:
 |   a0 = address accessed by the timed instruction
+|   a1 = second address, accessed in turn with a0 by the pair targets
 |   a2 = VIA1 T2 counter low, a3 = VIA1 T2 counter high
 |   d1 = value written by the write instruction
 |   d6 = loop count - 1, d7 = $FF (the value loaded into T2)
@@ -27,6 +28,7 @@ bt_call:
 	moveq	#0,%d3
 	moveq	#0,%d4
 	moveq	#0,%d5
+	move.l	28(%a1),%a1
 	jsr	(%a4)
 	move.l	(%sp)+,%a1
 	move.b	%d2,19(%a1)

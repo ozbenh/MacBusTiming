@@ -23,9 +23,10 @@
 #include <OSUtils.h>
 #include <Traps.h>
 
-#define VERSION "3"
+#define VERSION "4"
 
 /* Low memory globals */
+#define LM_MEMTOP		0x108
 #define LM_TICKS		0x16A
 #define LM_VIA			0x1D4
 #define LM_SCCRD		0x1D8
@@ -55,6 +56,7 @@
 #define OP_START_LO	0x1487	/* move.b d7,(a2) */
 #define OP_START_HI	0x1687	/* move.b d7,(a3) */
 #define OP_READ		0x1010	/* move.b (a0),d0 */
+#define OP_READ_A1	0x1011	/* move.b (a1),d0 */
 #define OP_WRITE	0x1081	/* move.b d1,(a0) */
 #define OP_READ_L	0x2010	/* move.l (a0),d0 */
 #define OP_WRITE_L	0x2081	/* move.l d1,(a0) */
@@ -196,10 +198,12 @@ struct bt_args
 	uint8_t hi1, lo, hi2;		/* 19, 20, 21 */
 	uint8_t pad2[2];
 	uint32_t wval;				/* 24 */
+	volatile uint8_t *target2;	/* 28 */
 };
 _Static_assert(offsetof(struct bt_args, loops) == 16, "bt_args layout");
 _Static_assert(offsetof(struct bt_args, hi2) == 21, "bt_args layout");
 _Static_assert(offsetof(struct bt_args, wval) == 24, "bt_args layout");
+_Static_assert(offsetof(struct bt_args, target2) == 28, "bt_args layout");
 
 extern void bt_call(struct bt_args *args);
 
@@ -251,7 +255,7 @@ static long ticksPerS100;
 /*
  * Output, kept to save it to a file at the end
  */
-static char outText[65536];
+static char outText[131072];
 static size_t outLength;
 
 static void out(const char *format, ...)
@@ -475,9 +479,10 @@ static void FlushCode(void)
 /*
  * Generates: start the timer; loop: n x (op, k x filler); dbra; read the
  * timer. With a step (MODE_DCACHE), op is move.l d16(a0),d0 with d16 = i x
- * step, and lea n x step(a0),a0 comes before the dbra.
+ * step, and lea n x step(a0),a0 comes before the dbra. With pair, every
+ * other op reads (a1) instead of (a0).
  */
-static void Generate(uint16_t op, int16_t step, int n, int k)
+static void Generate(uint16_t op, int16_t step, int n, int k, bool pair)
 {
 	uint16_t *p = codeBuf;
 
@@ -486,7 +491,7 @@ static void Generate(uint16_t op, int16_t step, int n, int k)
 	uint16_t *loop = p;
 	for (int i = 0; i < n; i++)
 	{
-		*p++ = op;
+		*p++ = pair && (i & 1) ? OP_READ_A1 : op;
 		if (op == OP_READ_DL)
 		{
 			*p++ = (uint16_t)(i * step);
@@ -524,7 +529,7 @@ enum { PRE_NONE, PRE_IWM, PRE_WSRC };
  */
 enum { MODE_PLAIN, MODE_ICACHE_OFF, MODE_DCACHE };
 
-#define MAX_TARGETS		32
+#define MAX_TARGETS		40
 #define MAX_K			40
 
 static const int16_t kList[MAX_K] =
@@ -552,13 +557,14 @@ struct target
 	uint8_t size;				/* Bytes accessed: 1 or 4 */
 	uint8_t mode;
 	int16_t step;				/* MODE_DCACHE */
+	volatile uint8_t *addr2;	/* Pair: read in turn with addr */
 	struct result r[MAX_K];
 };
 
 static struct target targets[MAX_TARGETS];
 static int nTargets;
 static int nK;
-static struct target *regTarget, *ramTarget;
+static struct target *regTarget, *ramTarget, *romTarget, *screenTarget;
 
 static struct target *AddTarget(const char *name, volatile uint8_t *addr, uint8_t kind, uint8_t pre,
 		volatile uint8_t *wsrc, uint8_t wval)
@@ -573,6 +579,7 @@ static struct target *AddTarget(const char *name, volatile uint8_t *addr, uint8_
 	t->size = 1;
 	t->mode = MODE_PLAIN;
 	t->step = 0;
+	t->addr2 = NULL;
 	return t;
 }
 
@@ -587,7 +594,12 @@ static int BlockSize(const struct target *t, int k)
 {
 	int budget = codeBudget - (t->mode == MODE_DCACHE ? 4 : 0);
 	int n = budget / (OpBytes(t) + 2 * k);
-	return n > 64 ? 64 : n;
+	if (n > 64)
+	{
+		n = 64;
+	}
+	/* A pair reads both addresses as often */
+	return t->addr2 ? n & ~1 : n;
 }
 
 static void TargetPre(struct target *t, struct bt_args *a)
@@ -732,9 +744,10 @@ static void Measure(struct target *t, int ki)
 	{
 		return;
 	}
-	Generate(OpFor(t), t->step, n, k);
+	Generate(OpFor(t), t->step, n, k, t->addr2 != NULL);
 	a.code = codeBuf;
 	a.target = t->addr;
+	a.target2 = t->addr2;
 	a.t2l = &via[VIA_T2CL];
 	a.t2h = &via[VIA_T2CH];
 	a.wval = t->wval;
@@ -782,7 +795,7 @@ static void MeasureT0(void)
 	struct bt_args a = {0};
 	uint16_t v[16];
 
-	Generate(OP_REG, 0, 0, 0);
+	Generate(OP_REG, 0, 0, 0, false);
 	a.code = codeBuf;
 	a.target = ramBuf;
 	a.t2l = &via[VIA_T2CL];
@@ -799,6 +812,80 @@ static void MeasureT0(void)
 	}
 	SortU16(v, repeats);
 	t0 = v[0];
+}
+
+/*
+ * Refresh scan: one read and k fillers per loop, so the reads come at a
+ * fixed period, with more repeats, keeping the slowest one too. A DRAM
+ * refresh delays the read it falls on; when the refresh period is a
+ * multiple of the loop period, every run falls on the same reads, which
+ * depend on where the run starts, so the repeats spread out.
+ */
+#define SCAN_K			64
+#define SCAN_REPEATS	15
+
+struct scan
+{
+	struct target *t;
+	uint16_t loops[SCAN_K];
+	uint16_t min[SCAN_K], med[SCAN_K], max[SCAN_K];	/* Ticks, less t0 */
+};
+
+static struct scan scans[3];
+static int nScans;
+
+static void AddScan(struct target *t)
+{
+	if (t)
+	{
+		scans[nScans++].t = t;
+	}
+}
+
+static uint16_t LessT0(uint16_t ticks)
+{
+	return ticks > t0 ? ticks - t0 : 0;
+}
+
+static void MeasureScan(struct scan *sc, int k)
+{
+	struct target *t = sc->t;
+	struct bt_args a = {0};
+	uint16_t v[SCAN_REPEATS];
+
+	Generate(OpFor(t), 0, 1, k, false);
+	a.code = codeBuf;
+	a.target = t->addr;
+	a.t2l = &via[VIA_T2CL];
+	a.t2h = &via[VIA_T2CH];
+
+	/* Trial with 256 loops to choose the loop count */
+	a.loops = 255;
+	uint32_t trial = LessT0(TimedWindow(t, &a));
+	if (trial < 1)
+	{
+		trial = 1;
+	}
+	uint32_t loops = runBudget * 256 / trial;
+	if (loops < 1)
+	{
+		loops = 1;
+	}
+	if (loops > 65536)
+	{
+		loops = 65536;
+	}
+	a.loops = loops - 1;
+
+	for (int i = 0; i < SCAN_REPEATS; i++)
+	{
+		v[i] = TimedWindow(t, &a);
+	}
+	SortU16(v, SCAN_REPEATS);
+	sc->loops[k] = loops - 1;
+	sc->min[k] = LessT0(v[0]);
+	sc->med[k] = LessT0(v[SCAN_REPEATS / 2]);
+	sc->max[k] = LessT0(v[SCAN_REPEATS - 1]);
 }
 
 /*
@@ -1021,6 +1108,58 @@ static void DetectDevices(void)
 	}
 }
 
+/*
+ * Pairs: reads of the RAM buffer in turn with reads at a distance from it,
+ * in another row of the DRAM, then in another bank
+ */
+static const struct
+{
+	uint32_t distance;
+	const char *name;
+} pairs[] =
+{
+	{32, "32 B"},
+	{4096, "4 KB"},
+	{65536, "64 KB"},
+	{1UL << 20, "1 MB"},
+	{4UL << 20, "4 MB"},
+};
+
+/*
+ * Top of the RAM: its logical size, or MemTop without Gestalt 'lram'. In
+ * the 24-bit address map the RAM ends at 8 MB, or at the RAM buffer on the
+ * LC and LC II, whose 24-bit map has 10 MB of RAM.
+ */
+static uint32_t RamTop(void)
+{
+	uint32_t top = (uint32_t)GestaltOr('lram', lm32(LM_MEMTOP));
+	uint32_t top24 = (uint32_t)ramBuf + 64;
+	if (top24 < 0x800000)
+	{
+		top24 = 0x800000;
+	}
+	if (!(GestaltOr('addr', 0) & 1) && top > top24)
+	{
+		top = top24;
+	}
+	return top;
+}
+
+/* The address distance bytes above the RAM buffer, or below it, in the RAM */
+static volatile uint8_t *RamAt(uint32_t distance)
+{
+	uint32_t a = (uint32_t)ramBuf;
+	if (a + distance < RamTop())
+	{
+		return (volatile uint8_t *)(a + distance);
+	}
+	if (a >= distance)
+	{
+		return (volatile uint8_t *)(a - distance);
+	}
+	return NULL;
+}
+
 static void BuildTargets(void)
 {
 	char name[28];
@@ -1030,12 +1169,21 @@ static void BuildTargets(void)
 	AddTarget("RAM write", ramBuf + 2, KIND_WRITE, PRE_NONE, NULL, 0x5A);
 	AddTarget("RAM read.l", ramBuf, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
 	AddTarget("RAM write.l", ramBuf + 8, KIND_WRITE, PRE_NONE, NULL, 0x5A)->size = 4;
-	AddTarget("ROM read", romAddr + 0x100, KIND_READ, PRE_NONE, NULL, 0);
+	for (int i = 0; i < (int)(sizeof(pairs) / sizeof(pairs[0])); i++)
+	{
+		volatile uint8_t *other = RamAt(pairs[i].distance);
+		if (other)
+		{
+			snprintf(name, sizeof(name), "RAM pair +%s", pairs[i].name);
+			AddTarget(name, ramBuf, KIND_READ, PRE_NONE, NULL, 0)->addr2 = other;
+		}
+	}
+	romTarget = AddTarget("ROM read", romAddr + 0x100, KIND_READ, PRE_NONE, NULL, 0);
 	AddTarget("ROM read.l", romAddr + 0x100, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
 	if (screen)
 	{
 		/* First bytes of the screen, written back with the value read */
-		AddTarget("Screen read", screen, KIND_READ, PRE_NONE, NULL, 0);
+		screenTarget = AddTarget("Screen read", screen, KIND_READ, PRE_NONE, NULL, 0);
 		AddTarget("Screen write", screen, KIND_WRITE, PRE_WSRC, screen, 0);
 		AddTarget("Screen read.l", screen, KIND_READ, PRE_NONE, NULL, 0)->size = 4;
 		AddTarget("Screen write.l", screen, KIND_WRITE, PRE_WSRC, screen, 0)->size = 4;
@@ -1223,7 +1371,8 @@ static void PrintHeader(void)
 	{
 		out("VIA clock: not measured (no Microseconds or no RTC seconds), nominal %ld\n", (long)VIA_HZ);
 	}
-	out("Screen $%08lX\n", (unsigned long)screen);
+	out("Screen $%08lX, RAM buffer $%08lX, RAM top $%08lX\n", (unsigned long)screen,
+			(unsigned long)ramBuf, (unsigned long)RamTop());
 	out("VIA1 $%08lX IER $%02X\n", (unsigned long)via, viaIER);
 	out("VIA2 %s $%08lX\n", hasVia2 ? "yes" : "no", (unsigned long)via2);
 	out("SCC %s rd $%08lX wr $%08lX\n", hasScc ? "yes" : "no", (unsigned long)sccRd, (unsigned long)sccWr);
@@ -1252,6 +1401,10 @@ static void PrintTables(void)
 	{
 		struct target *t = &targets[ti];
 		out("\n%s @ $%08lX\n", t->name, (unsigned long)t->addr);
+		if (t->addr2)
+		{
+			out("  in turn with $%08lX\n", (unsigned long)t->addr2);
+		}
 		out("   k   gap_ns   raw_ns   med_ns   bus_ns  bus_clk   ram_ns     NxL spr\n");
 		for (int ki = 0; ki < nK; ki++)
 		{
@@ -1276,6 +1429,34 @@ static void PrintTables(void)
 			}
 			out("%4d %8s %8s %8s %8s %8s %8s %4ux%-4u %u\n", kList[ki], a, b, c, d, e, f, r->n, r->loops,
 					r->spread);
+		}
+	}
+}
+
+static void PrintScans(void)
+{
+	char a[16], b[16], c[16];
+
+	if (!nScans)
+	{
+		out("\nRefresh scan: not run on this machine\n");
+		return;
+	}
+	out("\nRefresh scan: one read and k fillers per loop, %d repeats of L loops.\n"
+		"Per loop in clocks: fastest, median and slowest repeat. spr: slowest less\n"
+		"fastest, in VIA ticks.\n", SCAN_REPEATS);
+	for (int si = 0; si < nScans; si++)
+	{
+		struct scan *sc = &scans[si];
+		out("\nRefresh scan: %s at $%08lX\n", sc->t->name, (unsigned long)sc->t->addr);
+		out("   k      L  min_clk  med_clk  max_clk  spr\n");
+		for (int k = 0; k < SCAN_K; k++)
+		{
+			uint32_t loops = sc->loops[k] + 1UL;
+			FmtClk(a, PerAccessDns(sc->min[k], loops));
+			FmtClk(b, PerAccessDns(sc->med[k], loops));
+			FmtClk(c, PerAccessDns(sc->max[k], loops));
+			out("%4d %6lu %8s %8s %8s %4u\n", k, loops, a, b, c, sc->max[k] - sc->min[k]);
 		}
 	}
 }
@@ -1421,11 +1602,28 @@ int main(void)
 		}
 	}
 
+	/* Too long with a VBL wait per window */
+	if (!vblSync)
+	{
+		AddScan(ramTarget);
+		AddScan(romTarget);
+		AddScan(screenTarget);
+		printf("Refresh scan...\n");
+		for (int k = 0; k < SCAN_K; k++)
+		{
+			for (int si = 0; si < nScans; si++)
+			{
+				MeasureScan(&scans[si], k);
+			}
+		}
+	}
+
 	endTicks = ticks();
 	printf("\n");
 	PrintHeader();
 	PrintSummary();
 	PrintTables();
+	PrintScans();
 	SaveResults();
 	printf("\nSaved to \"BusTiming Results\". Press Return to quit.\n");
 	getchar();
