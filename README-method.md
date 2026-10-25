@@ -301,6 +301,7 @@ Bus time back to back and floor, in CPU clocks.
 | Macintosh IIci (25 MHz 68030, System 7.1) | 3 / 3 | 3 | 1.00 VIA cycle / 15.9 (half a VIA cycle) | 6 (RBV) | 11 / 8 | 6 / 4 | 9 / 7 |
 | Macintosh LC II (15.6672 MHz 68030, System 6.0.7) | 6 / 6 (4-clock grid) | 5 | 1.05 VIA cycle / 18.9 | 6 (V8, 4-clock grid) | 40.8 / 13.2 | 5 / 3 | 6 / - |
 | Macintosh LC III (25 MHz 68030, System 7.1) | 6 / 5 (posted) | 6 | 1.00 VIA cycle / 23.6 (0.74 VIA cycle) | 5 (Sonora) | 10 / 9 | 6 / 6 | 5 / - |
+| Macintosh LC (15.6672 MHz 68020, System 7.1, v3) | 6 / 6 (4-clock grid) | 5 | 2.00 VIA cycles / 23.5 | 6 (V8, 4-clock grid) | 40.9 / 13.2 | 5 / 3 | 6 / - |
 
 What the IIci shows:
 
@@ -381,6 +382,53 @@ RAM read 5, write 4 (not posted), ROM 5, VIA2/SCC/5380/ASC 4 flat with no
 SCC recovery, ISM 4 isolated and every 11 clocks back to back; VIA1 one
 cycle back to back up to 7 fillers (574 ns), floor 19.3 (released half
 way). To be compared again once Snow's 68030 model has changed.
+
+### BusTiming v3 runs (2026-10-26)
+
+The IIci, LC, LC II and LC III ran v3 under System 7.1:
+results/hw-maciici-v3.txt, hw-maclc-v3.txt (the first LC run),
+hw-maclcii-v3.txt and hw-maclciii-v3.txt. The v1 numbers come back the
+same on every machine, to a few hundredths of a clock. The VIA clock is
+now measured on all four (783.33 to 783.45 kHz). Under 7.1 the LC and
+LC II SWIM is in IWM mode and the probe (FF E7 97 FF, FF DF 97 FF) is not
+recognised, so the floppy controller is not measured there; the LC III
+probe reads 60 4C 60 F0 this time (40 28 40 F6 in v1).
+
+New in v3:
+
+- IIci: RAM, ROM and screen 3 clocks for bytes and longs (the screen is
+  in RAM bank A); I-cache off fetch fully hidden; D-cache hit 3.1, line
+  fill 14 back to back with a floor of 4.4.
+- LC and LC II (V8): a long read or write of the RAM or the screen takes
+  10.2 to 10.3 clocks, a byte or word 6: the second 16-bit half ends 4
+  clocks (one slot) after the first, not on a new 6-clock cycle. The
+  screen behaves exactly as the RAM, its writes posted too. ROM longs 5
+  (32-bit). I-cache off fetch about 4.3 clocks per 2-byte filler. LC II
+  D-cache hit 3.1, line fill 10.5 (a long read, no burst).
+- LC III (Sonora): RAM and ROM longs as bytes (32-bit). The screen is
+  16-bit and slower than the 1 wait state Snow assumed: byte read 6.1,
+  write 3.2 posted (both as the RAM), long read 11.2, long write 7.4
+  back to back. I-cache off fetch 1.7 clocks per filler. D-cache hit 3.1,
+  line fill 11.5 back to back with a floor of 7.4.
+
+The LC (68020) and the LC II (68030), both on the V8, differ only on
+VIA1: the LC takes 2 VIA cycles back to back even with no filler (LC II:
+1), and its sweep reaches each next VIA cycle one step of k earlier. Same
+release point, but the 68020 starts its next access a little later than
+the 68030 and misses the edge. Not worth fitting before Snow's 68020 and
+68030 instruction timings are right.
+
+Snow after these runs (lc-family 3d8357ae "LC: overlap the halves of
+long V8 RAM accesses"; results/snow-maclc-v3.txt, snow-lcii-v3.txt,
+snow-lciii-v3.txt): V8 RAM and screen longs 10.0 to 10.1 clocks, screen
+writes posted; everything else on the V8 as before. Left for the CPU
+side: posted writes to devices (VIA, SCC, 5380), I-cache off fetch
+(Snow fetches a word per bus cycle: 6.1 clocks per filler on the LC II,
+4.1 on the LC III), the D-cache, and the LC's VIA1 2 cycles. A Sonora
+video RAM of 3 wait states for reads and 0 for writes
+(results/snow-lciii-v3-sonora-vram.txt) gives byte read 6.0 and write
+2.9 as on the real LC III, long read 11.9 (real 11.2) and long write 6.0
+(real 7.4): the long accesses need more than wait states.
 
 This says nothing about the GLUE of the Mac II, IIx and IIcx: that needs
 its own run.
