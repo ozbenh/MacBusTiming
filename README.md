@@ -68,3 +68,12 @@ resource and crashes under System 7, unless RetroConsole is built without
 
 How the measurements are made and what the numbers mean is in
 [README-method.md](README-method.md).
+
+## LC475Check
+
+A second, small program on the same disk, only for the LC 475, LC 575 and Quadra 605. It takes
+a second. Turn on 32-bit addressing and turn off virtual memory in the Memory control panel first, and
+restart. It looks at addresses and registers nothing documents, and at how two interrupt flags behave. To
+do that it makes the idle SCSI chip raise an interrupt for a moment, with interrupts masked. Please
+restart the Mac when it's done, and send the file "LC475Check Results" it writes next to itself. Run
+it from a disk that isn't locked.
