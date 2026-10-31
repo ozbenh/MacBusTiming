@@ -166,16 +166,30 @@ All times are per access, from the fastest run.
   register-only at k = 0. This is the CPU work between two accesses beyond
   the back to back case. It is measured, not computed from instruction
   timings.
-- **bus_ns**, **bus_clk**: raw less register-only at the same k. This is
-  what the bus cycle costs over an instruction that doesn't use the bus:
-  the bus cycle, its wait states, and any synchronisation or recovery wait.
-  In CPU clocks with the clock from Gestalt ('pclk') or, when Gestalt
-  doesn't have it, from a table (then marked "assumed").
+- **over_ns**, **over_clk** (**bus_ns**, **bus_clk** before v5): raw less
+  register-only at the same k: what the access adds to an instruction that
+  doesn't use the bus. **This is not the bus cycle.** In CPU clocks with
+  the clock from Gestalt ('pclk') or, when Gestalt doesn't have it, from a
+  table (then marked "assumed"). From v5, an assumed clock more than 10% from
+  what the fillers show is replaced by the measured one ("measured", and a
+  warning): the LC 475 at 33 MHz. Older files: `bt_report.py` does the same.
 - **ram_ns**: raw less RAM read at the same k.
 
-The wait states of a device are `bus_clk - base cycle` where the base
-cycle is 4 clocks on the 68000 and 3 on the 68020/68030 (asynchronous
-cycle). On the 68040 the measured RAM write is 2 bus clocks.
+What the numbers mean, per CPU (details in ../bustiming-calibration.md):
+
+- 68030 read: **cycle = raw - 3** clocks: `move.b (a0),d0` is 5 clocks with a
+  two-clock read in the manual's tables (11.6). A register-only loop is 2, so
+  over_clk = cycle + 1.
+- 68030 posted write: the period back to back is about the cycle. This one comes
+  from Snow's model, not a known real machine.
+- 68020, 68040, 68000: raw times only, not worked out.
+- Comparing the same number between a real machine and an emulator says the
+  totals agree. Only with right CPU instruction times does it say the bus
+  cycles agree.
+- A cache card (IIci, IIsi, SE/30) makes RAM and ROM reads loop at the speed of
+  a two-clock read: the small loops aren't timing the memory. `bt_report.py`
+  warns about it: RAM read raw at most 5.4, or an I-cache off fetch as fast as
+  a cached one.
 
 The **Summary** has, per target:
 
@@ -186,8 +200,8 @@ The **Summary** has, per target:
   take one VIA cycle each), 2.00 on the compact Macs (a 68000 VPA cycle
   ends on the E clock edge, and the prefetch between two accesses makes
   the second one miss the next edge).
-- **b2b_bus**, **b2b_clk**: bus time back to back.
-- **floor_ns**, **floor_clk**: the lowest bus time over the sweep: the
+- **b2b_over**, **b2b_clk** (**b2b_bus** before v5): over_ns and over_clk back to back.
+- **floor_ns**, **floor_clk**: the lowest over time along the sweep: the
   access itself once no recovery or synchronisation wait is left.
 - **knee_gap_ns**: the filler time from which the bus time is within 1/4
   clock of the floor. For a device with a recovery time, the recovery
@@ -283,7 +297,7 @@ read" after the mode found.
 
 The full results files are in [results/](results/).
 
-`bt_report.py <file>...` turns results files into CPU clocks, wait states,
+`bt_report.py <file>...` turns results files into raw clocks, 68030 cycles,
 recovery times and VIA synchronisation in words; `bt_report.py -c
 <file>...` puts several of them side by side in one table.
 
@@ -334,7 +348,7 @@ Snow, what its bus code models, and what the program found:
 ## Results on real hardware
 
 The full results files are in [results/](results/), named `hw-*.txt`.
-Bus time back to back and floor, in CPU clocks.
+over_clk back to back and floor, in CPU clocks (bt_report gives cycles).
 
 | Machine | RAM rd / wr | ROM rd | VIA1 b2b / floor | VIA2 | SCC rd b2b / floor | SCSI rd / wr | ASC rd / wr |
 |---|---|---|---|---|---|---|---|
@@ -342,8 +356,12 @@ Bus time back to back and floor, in CPU clocks.
 | Macintosh LC II (15.6672 MHz 68030, System 6.0.7) | 6 / 6 (4-clock grid) | 5 | 1.05 VIA cycle / 18.9 | 6 (V8, 4-clock grid) | 40.8 / 13.2 | 5 / 3 | 6 / - |
 | Macintosh LC III (25 MHz 68030, System 7.1) | 6 / 5 (posted) | 6 | 1.00 VIA cycle / 23.6 (0.74 VIA cycle) | 5 (Sonora) | 10 / 9 | 6 / 6 | 5 / - |
 | Macintosh LC (15.6672 MHz 68020, System 7.1, v3) | 6 / 6 (4-clock grid) | 5 | 2.00 VIA cycles / 23.5 | 6 (V8, 4-clock grid) | 40.9 / 13.2 | 5 / 3 | 6 / - |
+| Quadra 610 (25 MHz 68040, System 7.5.5, v1) | 5.1 / 4.1 (posted) | 5 | 1.00 VIA cycle / 24.4 | 11.3 (IOSB) | 17.3 / 16.3 | 11.3 / - | 12.2 / - |
+| LC 475 (**modified, not stock speed:** about 33 MHz 68040, see the warning below; System 7.5.5, v1) | 6.1 / 5.1 (posted) | 7 | 1.00 VIA cycle / 29.6 | 11.3 (PrimeTime) | 20 / 16.3 | 12.3 / - | 12.5 to 13 / - |
 
-What the IIci shows:
+What the IIci shows (corrected 2026-10-31: this IIci most likely has a cache card, see
+"The numbers"; its RAM, ROM and screen figures aren't memory timing, and the clocks
+below are over_clk, not cycles):
 
 - VIA1 is synchronous with the VIA clock: one access per VIA cycle back to
   back, reads and writes, and an isolated read takes half a VIA cycle
@@ -422,6 +440,82 @@ RAM read 5, write 4 (not posted), ROM 5, VIA2/SCC/5380/ASC 4 flat with no
 SCC recovery, ISM 4 isolated and every 11 clocks back to back; VIA1 one
 cycle back to back up to 7 fillers (574 ns), floor 19.3 (released half
 way). To be compared again once Snow's 68030 model has changed.
+
+What the LC 475 shows (results/hw-lc475.txt, v1, System 7.5.5, compared with
+the Quadra 610, results/hw-quadra610.txt, same ROM and the same family of
+chips):
+
+**Warning: not a stock machine.** A stock LC 475 runs at 25 MHz and this one
+measures about 33 MHz. The owner confirms it has been modified, apparently a
+CPU replacement, though that is hard to tell (only the 33 MHz is measured).
+It is still useful as a reference point for the timings of this family of
+chips, but do not use these numbers as those of a stock LC 475. The RAM,
+ROM, 53C96, ASC and SCC recovery figures may differ at 25 MHz.
+
+- This LC 475 does not run at 25 MHz. Gestalt has no 'pclk', so the file
+  assumes 25 MHz, but a filler takes 30.4 ns against 39.9 ns on the Quadra
+  610: about 32.9 MHz. Its bus_clk column and floor_clk are therefore
+  wrong by that factor (bt_report.py corrects for it): all the clocks here are
+  from bus_ns at 30.43 ns per clock. A clock of 33 MHz is the reading that
+  fits: VIA2 and the ISM then come out equal to the Quadra 610's clock for
+  clock, over the whole sweep (11.3 11.5 11.3 11.0, repeating every 4
+  fillers).
+- Same number of clocks as the Quadra 610: VIA2 11.3, ISM mode read 11.3
+  (one every 16 back to back), SCC read 16.3. These cycles are counted in
+  bus clocks, and go faster with the clock.
+- More clocks at the higher clock, as if timed to keep a minimum in ns (or
+  set up for the speed): RAM read 6.1 against 5.1 (186 ns, 206 ns), RAM
+  writes posted, back to back every 6.1 against 5.1; ROM 7 against 5 (213
+  ns, 200 ns); 53C96 status 12.3 against 11.3; ASC 12.5 to 13 against 11.8
+  to 12.8 (both uneven over the sweep, not a plain saw tooth).
+- SCC reads and writes back to back come every 21 clocks (639 ns). On the
+  Quadra 610 writes come every 14 (560 ns), and its reads, at 17.3, are too
+  long to show a recovery. The recovery does not follow the clock or stay
+  constant in ns. Not explained.
+- VIA1 is synchronous with the VIA clock, one access per VIA cycle back to
+  back. The floor is 900 ns (0.71 VIA cycle; the Quadra 610 975 ns, 0.76).
+  The one cycle per access holds up to 12 fillers (365 ns; the Quadra 610 7,
+  279 ns); it reaches two cycles between 425 and 486 ns of fillers and three
+  between 1706 and 1949 ns. Writes one cycle back to back, hidden from about
+  1276 ns of fillers.
+- The probe reads 60 4C 60 F0 (the Quadra 610 40 28 40 F6), the two values
+  also seen on the LC III.
+- MAME's LC 475 (results/mame-lc475.txt: RAM 4, ROM 4, SWIM 9, 53C96 7, ASC
+  4, SCC synchronous with the VIA clock) is well under the real machine, and
+  the real SCC is not synchronous with the VIA clock. Snow has no LC 475.
+
+The same machine then ran v4 (results/hw-lc475-v4.txt, same warning). The v1
+numbers come back the same. In clocks of 30.43 ns, which again is not what the
+file's clk columns use:
+
+- RAM and ROM longs cost the same as bytes (32-bit): RAM 6.1, ROM 7.
+- RAM pairs at +32 B to +4 MB cost the same as RAM read, 6.1: no cost for
+  changing row or bank that shows here, and so no gain from staying in a row.
+- The screen ($51901000) is faster than the RAM: read 4.1 for bytes and longs,
+  writes posted, back to back every 4.1. The repeats spread by up to 25 ticks,
+  against 0 to 2 for the RAM: something else uses the video RAM, most likely
+  the video itself.
+- I-cache off fetch: each filler adds 108 ns, 3.6 clocks, which is 7.1 clocks
+  per long, so one 6.1 clock RAM read (and its 1 clock of execution) per two
+  2-byte fillers.
+- D-cache hit costs nothing over a filler. A line fill comes every 16 clocks
+  back to back (491 ns), flat up to 8 fillers, with a floor of 6.1 (the RAM
+  read): the CPU goes on once it has the long it wants, while the rest of the
+  line arrives.
+- Refresh scan: no peaks. RAM spreads by at most 2 ticks at any k and ROM by
+  at most 1, so this method sees no refresh here. T and R are not known.
+
+No Quadra 610 v4 run exists to compare these with.
+
+ASCTester points to the first LC 475 data being from a different, likely stock
+machine: asctester/v5draft5-real-lc475.txt has BoxFlag 83 and System 7.5.3 and
+takes 1159 VIA ticks to fill FIFO A (the Quadra 610 1130), against BoxFlag 84
+and 931 ticks here, on the same machine as this BusTiming run. BusTiming was
+not run on that other machine. The schematics explain the BoxFlag: the low
+bits of the CPU ID at $5FFFFFFC are the system clock straps (sheet 7, R21/R22
+and R24/R25), and the ROM's product tables give $2221 BoxFlag 83 and $2222 BoxFlag
+84. So BoxFlag 84 means a board strapped for 33 MHz, as measured here. See
+../lc475-notes/00-model-data.md.
 
 ### BusTiming v3 runs (2026-10-26)
 

@@ -23,7 +23,7 @@
 #include <OSUtils.h>
 #include <Traps.h>
 
-#define VERSION "4"
+#define VERSION "5"
 
 /* Low memory globals */
 #define LM_MEMTOP		0x108
@@ -211,6 +211,8 @@ extern void bt_call(struct bt_args *args);
 static long machType, cpuType, sysVersion, clockHz, tmgrVersion;
 static const char *machName = "unknown";
 static bool clockFromGestalt;
+static long assumedClockHz;	/* Non zero: clockHz was measured instead */
+static int32_t fillerDns;	/* 8 fillers, in tenths of ns */
 static bool compact68k;		/* Plus, SE, Classic: video shares the RAM, VBL on CA1 */
 static uint32_t addrMapFlags;
 static bool addrMapFlagsValid;
@@ -1344,13 +1346,54 @@ static int32_t GapDns(int ki)
 	return regTarget->r[ki].minDns - regTarget->r[0].minDns;
 }
 
+/* Clocks of a filler: move.l d1,d5 from the cache, or fetched on the 68000 */
+static int FillerClocks(void)
+{
+	if (cpuType <= 2)
+	{
+		return 4;
+	}
+	return cpuType >= 5 ? 1 : 2;
+}
+
+/*
+ * Takes the clock from the fillers when it was only assumed and is more than
+ * 10% off: a clock chipped machine. Machines differ by a few percent (the V8
+ * stretches them by 7%), so a small difference says nothing.
+ */
+static void CheckClock(void)
+{
+	int ki = 0;
+	while (ki < nK && kList[ki] != 8)
+	{
+		ki++;
+	}
+	if (ki == nK || !regTarget->r[ki].ok || !regTarget->r[0].ok || GapDns(ki) <= 0)
+	{
+		return;
+	}
+	fillerDns = GapDns(ki);
+	long measured = (long)(8LL * FillerClocks() * 10000000000LL / fillerDns);
+	long diff = measured > clockHz ? measured - clockHz : clockHz - measured;
+	if (!clockFromGestalt && clockHz && diff > clockHz / 10)
+	{
+		assumedClockHz = clockHz;
+		clockHz = measured;
+	}
+}
+
 static void PrintHeader(void)
 {
 	out("BusTiming v%s\n", VERSION);
 	if (clockHz)
 	{
 		out("Machine: %s (gestalt %ld), CPU 680%ld0, clock %ld Hz%s\n", machName, machType,
-				cpuType - 1, clockHz, clockFromGestalt ? "" : " (assumed)");
+				cpuType - 1, clockHz, assumedClockHz ? " (measured)" : clockFromGestalt ? "" : " (assumed)");
+		if (assumedClockHz)
+		{
+			out("WARNING: this model runs at %ld Hz: clock chipped, or an emulator with other instruction times\n",
+					assumedClockHz);
+		}
 	}
 	else
 	{
@@ -1405,7 +1448,7 @@ static void PrintTables(void)
 		{
 			out("  in turn with $%08lX\n", (unsigned long)t->addr2);
 		}
-		out("   k   gap_ns   raw_ns   med_ns   bus_ns  bus_clk   ram_ns     NxL spr\n");
+		out("   k   gap_ns   raw_ns   med_ns  over_ns over_clk   ram_ns     NxL spr\n");
 		for (int ki = 0; ki < nK; ki++)
 		{
 			const struct result *r = &t->r[ki];
@@ -1462,7 +1505,8 @@ static void PrintScans(void)
 }
 
 /*
- * Summary: back to back cost, the floor of the bus time over the sweep, and
+ * Summary: back to back cost, the floor of the time over the register-only
+ * loop along the sweep, and
  * the filler time from which it stays within 1/4 clock (or 10 ns) of the floor.
  */
 static void PrintSummary(void)
@@ -1470,7 +1514,7 @@ static void PrintSummary(void)
 	char a[16], b[16], c[16], d[16], e[16];
 	const int32_t tol = clockHz ? (int32_t)(2500000000LL / clockHz) : 100;
 
-	out("\nSummary            b2b_ns b2b_via  b2b_bus  b2b_clk floor_ns floor_clk knee_gap_ns\n");
+	out("\nSummary            b2b_ns b2b_via b2b_over  b2b_clk floor_ns floor_clk knee_gap_ns\n");
 	for (int ti = 0; ti < nTargets; ti++)
 	{
 		struct target *t = &targets[ti];
@@ -1620,6 +1664,7 @@ int main(void)
 
 	endTicks = ticks();
 	printf("\n");
+	CheckClock();
 	PrintHeader();
 	PrintSummary();
 	PrintTables();
