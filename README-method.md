@@ -507,6 +507,12 @@ file's clk columns use:
 
 No Quadra 610 v4 run exists to compare these with.
 
+The same machine then ran v5 under System 7.1.1 in 32-bit mode
+(results/hw-lc475-v5.txt), with the RAM buffer at $02272510 instead of
+$00545670 and 36 MB of RAM top. Every access comes back the same up to 12 fillers: within 7 ns (the screen)
+and 5 ns (the others) of v4. v5 measured the clock itself (32.92 MHz) and warned. So neither
+the system, the address mode nor the place in RAM changes the timing.
+
 ASCTester points to the first LC 475 data being from a different, likely stock
 machine: asctester/v5draft5-real-lc475.txt has BoxFlag 83 and System 7.5.3 and
 takes 1159 VIA ticks to fill FIFO A (the Quadra 610 1130), against BoxFlag 84
